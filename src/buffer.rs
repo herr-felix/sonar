@@ -1,4 +1,4 @@
-use std::cmp;
+use std::cmp::{self, Ordering};
 use std::io::{self, BufRead, BufReader, Read};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -7,25 +7,42 @@ pub struct Cursor {
     pub col: usize,
 }
 
-//impl Ord for Cursor {
-//    fn cmp(&self, other: &Self) -> Ordering {
-//        if self.line < other.line {
-//            Some(Ordering::Less)
-//        } else if self.line > other.line {
-//            Some(Ordering::Greater)
-//        } else if self.col > other.col {
-//            Some(Ordering::Greater)
-//        } else if self.col < other.col {
-//            Some(Ordering::Less)
-//        } else {
-//            Some(Ordering::Equal)
-//        }
-//    }
-//}
+impl PartialOrd for Cursor {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        if self.line < other.line {
+            Some(Ordering::Less)
+        } else if self.line > other.line {
+            Some(Ordering::Greater)
+        } else if self.col > other.col {
+            Some(Ordering::Greater)
+        } else if self.col < other.col {
+            Some(Ordering::Less)
+        } else {
+            Some(Ordering::Equal)
+        }
+    }
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum LineCombination {
+    FromStart, // Combined from the start of a line. Probably by pressing backspace.
+    FromEnd,   // Combined from the end of a line. Probably by pressing delete.
+}
+
+#[derive(PartialEq)]
+enum BufferOp {
+    InsertChar(Cursor, char),
+    RemoveChar(Cursor, char, bool),
+    SplitLine(Cursor),
+    CombineLine(Cursor, LineCombination),
+    NoOp,
+}
 
 pub struct Buffer {
     lines: Vec<String>,
     cursor: Cursor,
+    undos: Vec<BufferOp>,
+    redos: Vec<BufferOp>,
 }
 
 impl Buffer {
@@ -33,6 +50,8 @@ impl Buffer {
         Buffer {
             lines: vec![String::from("")],
             cursor: Cursor { line: 0, col: 0 },
+            undos: Vec::new(),
+            redos: Vec::new(),
         }
     }
 
@@ -44,8 +63,82 @@ impl Buffer {
         Ok(Buffer {
             lines,
             cursor: Cursor { line: 0, col: 0 },
+            undos: Vec::new(),
+            redos: Vec::new(),
         })
     }
+
+    fn record_op(&mut self, op: BufferOp) {
+        if op != BufferOp::NoOp {
+            self.undos.push(op);
+            self.redos.clear();
+        }
+    }
+
+    pub fn undo(&mut self) {
+        if let Some(op) = self.undos.pop() {
+            match op {
+                BufferOp::InsertChar(cur, _) => {
+                    self.cursor = cur;
+                    self.op_remove_at();
+                }
+                BufferOp::RemoveChar(cur, ch, at) => {
+                    self.cursor = cur;
+                    self.op_insert_char(ch);
+                    if at {
+                        self.cursor = cur;
+                    }
+                }
+                BufferOp::SplitLine(cur) => {
+                    self.cursor = cur;
+                    self.op_remove_at();
+                }
+                BufferOp::CombineLine(cur, from) => {
+                    self.cursor = cur;
+                    self.op_newline();
+                    if from == LineCombination::FromEnd {
+                        self.cursor = cur;
+                    }
+                }
+                BufferOp::NoOp => (),
+            }
+            self.redos.push(op);
+        }
+    }
+
+    pub fn redo(&mut self) {
+        if let Some(op) = self.redos.pop() {
+            match op {
+                BufferOp::InsertChar(cur, ch) => {
+                    self.cursor = cur;
+                    self.op_insert_char(ch);
+                }
+                BufferOp::RemoveChar(cur, _, at) => {
+                    self.cursor = cur;
+                    if at {
+                        self.op_remove_at();
+                    } else {
+                        self.op_remove_before();
+                    }
+                }
+                BufferOp::SplitLine(cur) => {
+                    self.cursor = cur;
+                    self.op_newline();
+                }
+                BufferOp::CombineLine(cur, from) => {
+                    self.cursor = cur;
+                    match from {
+                        LineCombination::FromStart => self.op_remove_before(),
+                        LineCombination::FromEnd => self.op_remove_at(),
+                    };
+                }
+                BufferOp::NoOp => (),
+            }
+            self.undos.push(op);
+        }
+    }
+
+    // MOVING AROUND
 
     pub fn move_cursor_up(&mut self, delta: usize) {
         if delta <= self.cursor.line {
@@ -86,14 +179,7 @@ impl Buffer {
         }
     }
 
-    pub fn newline(&mut self) {
-        let new_line = self.lines[self.cursor.line].split_off(self.cursor.col);
-
-        self.cursor.line += 1;
-        self.cursor.col = 0;
-
-        self.lines.insert(self.cursor.line, new_line);
-    }
+    // GETTING DATA
 
     pub fn get_cursor(&self) -> Cursor {
         self.cursor
@@ -103,42 +189,63 @@ impl Buffer {
         self.lines[self.cursor.line].to_owned()
     }
 
-    pub fn insert_char(&mut self, ch: char) {
-        self.lines[self.cursor.line].insert(self.cursor.col, ch);
-        self.cursor.col += 1;
+    // MUTATION OPERATIONS
+
+    pub fn newline(&mut self) {
+        let op = self.op_newline();
+        self.record_op(op);
     }
 
-    pub fn insert(mut self, text: &str) {
-        if let Some(line) = self.lines.get_mut(self.cursor.line) {
-            if self.cursor.col == line.len() {
-                line.push_str(text);
-            } else {
-                line.insert_str(self.cursor.col, text);
-            }
+    fn op_newline(&mut self) -> BufferOp {
+        let new_line = self.lines[self.cursor.line].split_off(self.cursor.col);
+        let op = BufferOp::SplitLine(self.cursor);
 
-            self.cursor.col += text.len();
-        } else {
-            // Should never happen, but just in case
-            self.lines.push(String::from(text));
-            self.cursor = Cursor {
-                line: self.lines.len() - 1,
-                col: text.len(),
-            };
-        }
+        self.cursor.line += 1;
+        self.cursor.col = 0;
+
+        self.lines.insert(self.cursor.line, new_line);
+
+        op
+    }
+
+    pub fn insert_char(&mut self, ch: char) {
+        let op = self.op_insert_char(ch);
+        self.record_op(op);
+    }
+
+    fn op_insert_char(&mut self, ch: char) -> BufferOp {
+        let cur = self.cursor;
+
+        self.lines[cur.line].insert(cur.col, ch);
+        self.cursor.col += 1;
+
+        BufferOp::InsertChar(cur, ch)
     }
 
     // Like a "delete", remove the character under the cursor.
     // Append the next line to the current line if the cursor
     // is at the end of the line.
     pub fn remove_at(&mut self) {
+        let op = self.op_remove_at();
+        self.record_op(op);
+    }
+
+    fn op_remove_at(&mut self) -> BufferOp {
+        // Not end of line
         if self.cursor.col < self.lines[self.cursor.line].len() {
-            self.lines[self.cursor.line].remove(self.cursor.col);
+            let ch = self.lines[self.cursor.line].remove(self.cursor.col);
+            BufferOp::RemoveChar(self.cursor, ch, true)
         } else {
             // End of line
             if self.cursor.line < (self.lines.len() - 1) {
                 // Not end of file
                 let next_line = self.lines.remove(self.cursor.line + 1);
                 self.lines[self.cursor.line].push_str(next_line.as_str());
+
+                BufferOp::CombineLine(self.cursor, LineCombination::FromEnd)
+            } else {
+                // Del at EOF does nothing
+                BufferOp::NoOp
             }
         }
     }
@@ -147,9 +254,16 @@ impl Buffer {
     // Where removing the first character of a line, moves the
     // line to the end of the previous line.
     pub fn remove_before(&mut self) {
+        let op = self.op_remove_before();
+        self.record_op(op);
+    }
+
+    fn op_remove_before(&mut self) -> BufferOp {
         if self.cursor.col > 0 {
-            self.lines[self.cursor.line].remove(self.cursor.col - 1);
             self.cursor.col -= 1;
+            let ch = self.lines[self.cursor.line].remove(self.cursor.col);
+
+            BufferOp::RemoveChar(self.cursor, ch, false)
         } else {
             // Start of line
             if self.cursor.line > 0 {
@@ -160,6 +274,11 @@ impl Buffer {
                 self.cursor.col = self.lines[self.cursor.line].len();
 
                 self.lines[self.cursor.line].push_str(line.as_str());
+
+                BufferOp::CombineLine(self.cursor, LineCombination::FromStart)
+            } else {
+                // Backspace at 0,0 Does nothing
+                BufferOp::NoOp
             }
         }
     }

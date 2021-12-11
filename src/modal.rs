@@ -8,9 +8,8 @@ pub struct Modal {
 }
 
 impl Modal {
-
     pub fn new(name: String) -> Modal {
-        Modal{
+        Modal {
             name,
             line: "".to_owned(),
             col: 0,
