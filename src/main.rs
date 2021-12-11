@@ -11,8 +11,6 @@ use crossterm::style::Print;
 use crossterm::terminal::{enable_raw_mode, Clear, ClearType};
 use std::convert::TryFrom;
 use std::io::stdout;
-use std::rc::Rc;
-use std::cell::RefCell;
 
 struct Context {
     state: AppState,
@@ -128,7 +126,7 @@ fn handle_goto_line_modal_input(ctx: &mut Context, event: Event) {
             Event::Key(key) => match key.code {
                 KeyCode::Esc => { ctx.state = AppState::Edit },
                 KeyCode::Enter => {
-                    let line_no: usize = modal.get_line().parse::<usize>().unwrap();
+                    let line_no: usize = modal.line.parse::<usize>().unwrap();
                     ctx.active_buf.go_to_line(line_no).unwrap();
                     ctx.state = AppState::Edit
                 }

@@ -35,14 +35,6 @@ impl Modal {
         self.col = cmp::min(self.col + delta, self.line.len());
     }
 
-    pub fn get_line(&self) -> String {
-        self.line.to_owned()
-    }
-
-    pub fn get_col(&self) -> usize {
-        self.col
-    }
-
     pub fn insert_char(&mut self, ch: char) {
         self.line.insert(self.col, ch);
         self.col += 1;

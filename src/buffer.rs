@@ -1,5 +1,4 @@
-use std::cmp::{self, Ordering};
-use std::convert::TryFrom;
+use std::cmp;
 use std::io::{self, BufRead, BufReader, Read};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -38,7 +37,7 @@ impl Buffer {
     }
 
     pub fn new<T: Read>(read: T) -> io::Result<Buffer> {
-        let mut reader = BufReader::new(read);
+        let reader = BufReader::new(read);
 
         let lines = reader.lines().collect::<io::Result<Vec<String>>>()?;
 
