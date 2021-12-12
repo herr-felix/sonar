@@ -39,7 +39,6 @@ enum BufferOp {
     NoOp,
 }
 
-
 #[derive(PartialEq)]
 pub struct Buffer {
     pub name: String,
@@ -52,7 +51,7 @@ pub struct Buffer {
 impl Buffer {
     pub fn empty() -> Buffer {
         Buffer {
-            name: "[draft]".to_owned(), 
+            name: "[draft]".to_owned(),
             lines: vec![String::from("")],
             cursor: Cursor { line: 0, col: 0 },
             undos: Vec::new(),
