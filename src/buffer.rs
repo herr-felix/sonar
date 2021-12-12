@@ -1,5 +1,6 @@
 use std::cmp::{self, Ordering};
 use std::io::{self, BufRead, BufReader, Read};
+use BufferOp::*;
 
 #[derive(Clone, Copy, PartialEq)]
 pub struct Cursor {
@@ -38,7 +39,10 @@ enum BufferOp {
     NoOp,
 }
 
+
+#[derive(PartialEq)]
 pub struct Buffer {
+    pub name: String,
     lines: Vec<String>,
     cursor: Cursor,
     undos: Vec<BufferOp>,
@@ -48,6 +52,7 @@ pub struct Buffer {
 impl Buffer {
     pub fn empty() -> Buffer {
         Buffer {
+            name: "[draft]".to_owned(), 
             lines: vec![String::from("")],
             cursor: Cursor { line: 0, col: 0 },
             undos: Vec::new(),
@@ -55,12 +60,13 @@ impl Buffer {
         }
     }
 
-    pub fn new<T: Read>(read: T) -> io::Result<Buffer> {
+    pub fn new<T: Read>(name: String, read: T) -> io::Result<Buffer> {
         let reader = BufReader::new(read);
 
         let lines = reader.lines().collect::<io::Result<Vec<String>>>()?;
 
         Ok(Buffer {
+            name,
             lines,
             cursor: Cursor { line: 0, col: 0 },
             undos: Vec::new(),
@@ -69,7 +75,7 @@ impl Buffer {
     }
 
     fn record_op(&mut self, op: BufferOp) {
-        if op != BufferOp::NoOp {
+        if op != NoOp {
             self.undos.push(op);
             self.redos.clear();
         }
@@ -78,29 +84,29 @@ impl Buffer {
     pub fn undo(&mut self) {
         if let Some(op) = self.undos.pop() {
             match op {
-                BufferOp::InsertChar(cur, _) => {
+                InsertChar(cur, _) => {
                     self.cursor = cur;
                     self.op_remove_at();
                 }
-                BufferOp::RemoveChar(cur, ch, at) => {
+                RemoveChar(cur, ch, at) => {
                     self.cursor = cur;
                     self.op_insert_char(ch);
                     if at {
                         self.cursor = cur;
                     }
                 }
-                BufferOp::SplitLine(cur) => {
+                SplitLine(cur) => {
                     self.cursor = cur;
                     self.op_remove_at();
                 }
-                BufferOp::CombineLine(cur, from) => {
+                CombineLine(cur, from) => {
                     self.cursor = cur;
                     self.op_newline();
                     if from == LineCombination::FromEnd {
                         self.cursor = cur;
                     }
                 }
-                BufferOp::NoOp => (),
+                NoOp => (),
             }
             self.redos.push(op);
         }
@@ -109,11 +115,11 @@ impl Buffer {
     pub fn redo(&mut self) {
         if let Some(op) = self.redos.pop() {
             match op {
-                BufferOp::InsertChar(cur, ch) => {
+                InsertChar(cur, ch) => {
                     self.cursor = cur;
                     self.op_insert_char(ch);
                 }
-                BufferOp::RemoveChar(cur, _, at) => {
+                RemoveChar(cur, _, at) => {
                     self.cursor = cur;
                     if at {
                         self.op_remove_at();
@@ -121,18 +127,18 @@ impl Buffer {
                         self.op_remove_before();
                     }
                 }
-                BufferOp::SplitLine(cur) => {
+                SplitLine(cur) => {
                     self.cursor = cur;
                     self.op_newline();
                 }
-                BufferOp::CombineLine(cur, from) => {
+                CombineLine(cur, from) => {
                     self.cursor = cur;
                     match from {
                         LineCombination::FromStart => self.op_remove_before(),
                         LineCombination::FromEnd => self.op_remove_at(),
                     };
                 }
-                BufferOp::NoOp => (),
+                NoOp => (),
             }
             self.undos.push(op);
         }
@@ -198,7 +204,7 @@ impl Buffer {
 
     fn op_newline(&mut self) -> BufferOp {
         let new_line = self.lines[self.cursor.line].split_off(self.cursor.col);
-        let op = BufferOp::SplitLine(self.cursor);
+        let op = SplitLine(self.cursor);
 
         self.cursor.line += 1;
         self.cursor.col = 0;
@@ -219,7 +225,7 @@ impl Buffer {
         self.lines[cur.line].insert(cur.col, ch);
         self.cursor.col += 1;
 
-        BufferOp::InsertChar(cur, ch)
+        InsertChar(cur, ch)
     }
 
     // Like a "delete", remove the character under the cursor.
@@ -234,7 +240,7 @@ impl Buffer {
         // Not end of line
         if self.cursor.col < self.lines[self.cursor.line].len() {
             let ch = self.lines[self.cursor.line].remove(self.cursor.col);
-            BufferOp::RemoveChar(self.cursor, ch, true)
+            RemoveChar(self.cursor, ch, true)
         } else {
             // End of line
             if self.cursor.line < (self.lines.len() - 1) {
@@ -242,10 +248,10 @@ impl Buffer {
                 let next_line = self.lines.remove(self.cursor.line + 1);
                 self.lines[self.cursor.line].push_str(next_line.as_str());
 
-                BufferOp::CombineLine(self.cursor, LineCombination::FromEnd)
+                CombineLine(self.cursor, LineCombination::FromEnd)
             } else {
                 // Del at EOF does nothing
-                BufferOp::NoOp
+                NoOp
             }
         }
     }
@@ -263,7 +269,7 @@ impl Buffer {
             self.cursor.col -= 1;
             let ch = self.lines[self.cursor.line].remove(self.cursor.col);
 
-            BufferOp::RemoveChar(self.cursor, ch, false)
+            RemoveChar(self.cursor, ch, false)
         } else {
             // Start of line
             if self.cursor.line > 0 {
@@ -275,10 +281,10 @@ impl Buffer {
 
                 self.lines[self.cursor.line].push_str(line.as_str());
 
-                BufferOp::CombineLine(self.cursor, LineCombination::FromStart)
+                CombineLine(self.cursor, LineCombination::FromStart)
             } else {
                 // Backspace at 0,0 Does nothing
-                BufferOp::NoOp
+                NoOp
             }
         }
     }

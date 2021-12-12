@@ -12,23 +12,25 @@ use crossterm::terminal::{enable_raw_mode, Clear, ClearType};
 use std::convert::TryFrom;
 use std::io::stdout;
 
-struct Context {
-    state: AppState,
-    active_buf: Buffer,
-    name: String,
+
+#[derive(PartialEq)]
+enum App {
+    Editor(Buffer),
+    GoToLineModal(Buffer, Modal),
+    Quit,
 }
 
-fn draw_edit(ctx: &Context) -> crossterm::Result<()> {
-    let line = ctx.active_buf.get_line();
-    let cur = ctx.active_buf.get_cursor();
+fn draw_edit(buf: &Buffer) -> crossterm::Result<()> {
+    let line = buf.get_line();
+    let cur = buf.get_cursor();
 
     execute!(
         stdout(),
         MoveTo(0, 3),
         Clear(ClearType::CurrentLine),
-        Print(cur.line + 1),
+        Print(format!("{}, {}",cur.line + 1, cur.col + 1)),
         MoveTo(12, 3),
-        Print(ctx.name.clone()),
+        Print(buf.name.clone()),
         MoveTo(0, 0),
         Clear(ClearType::CurrentLine),
         Print(line),
@@ -36,16 +38,9 @@ fn draw_edit(ctx: &Context) -> crossterm::Result<()> {
     )
 }
 
-fn draw_modal(ctx: &Context, modal: &Modal) -> crossterm::Result<()> {
-    let cur = ctx.active_buf.get_cursor();
-
+fn draw_modal(modal: &Modal) -> crossterm::Result<()> {
     execute!(
         stdout(),
-        MoveTo(0, 3),
-        Clear(ClearType::CurrentLine),
-        Print(cur.line + 1),
-        MoveTo(12, 3),
-        Print(ctx.name.clone()),
         MoveTo(0, 0),
         Clear(ClearType::CurrentLine),
         Print(format!("{}: {}", modal.name, modal.line)),
@@ -53,51 +48,48 @@ fn draw_modal(ctx: &Context, modal: &Modal) -> crossterm::Result<()> {
     )
 }
 
-fn draw_screen(ctx: &mut Context) -> crossterm::Result<()> {
-    match &ctx.state {
-        AppState::Edit => draw_edit(ctx),
-        AppState::GoToLineModal(modal) => draw_modal(ctx, modal),
-        AppState::Quit => Ok(()),
+fn draw_screen(app: &App) -> crossterm::Result<()> {
+    match &app {
+        App::Editor(buffer) => draw_edit(buffer),
+        App::GoToLineModal(_, modal) => draw_modal(modal),
+        App::Quit => Ok(()),
     }
 }
 
-#[derive(PartialEq)]
-enum AppState {
-    Edit,
-    GoToLineModal(Modal),
-    Quit,
-}
 
-fn handle_edit_input(ctx: &mut Context, event: Event) {
+fn handle_edit_input(mut buf: Buffer, event: Event) -> App {
     match event {
         Event::Key(event) => match event.modifiers {
             KeyModifiers::CONTROL => match event.code {
-                KeyCode::Char('g') => {
-                    ctx.state = AppState::GoToLineModal(Modal::new("Go to line".to_owned()))
+                // Go to line
+                KeyCode::Char('g') => { 
+                    return App::GoToLineModal(buf, Modal::new("Go to line".to_owned()))
                 }
-                KeyCode::Char('z') => ctx.active_buf.undo(),
-                KeyCode::Char('u') => ctx.active_buf.redo(),
+                // Undo
+                KeyCode::Char('z') => buf.undo(),
+                // Redo
+                KeyCode::Char('y') => buf.redo(),
                 _ => (),
             },
-            KeyModifiers::NONE => match event.code {
-                KeyCode::Esc => ctx.state = AppState::Quit,
-                KeyCode::Enter => ctx.active_buf.newline(),
-                KeyCode::Up => ctx.active_buf.move_cursor_up(1),
-                KeyCode::Down => ctx.active_buf.move_cursor_down(1),
-                KeyCode::Left => ctx.active_buf.move_cursor_left(1),
-                KeyCode::Right => ctx.active_buf.move_cursor_right(1),
-                KeyCode::Delete => ctx.active_buf.remove_at(),
-                KeyCode::Backspace => ctx.active_buf.remove_before(),
-                KeyCode::Home => ctx.active_buf.move_start_of_line(),
-                KeyCode::End => ctx.active_buf.move_end_of_line(),
-                KeyCode::Char(ch) => ctx.active_buf.insert_char(ch),
+            _ => match event.code {
+                KeyCode::Esc => return App::Quit,
+                KeyCode::Enter => buf.newline(),
+                KeyCode::Up => buf.move_cursor_up(1),
+                KeyCode::Down => buf.move_cursor_down(1),
+                KeyCode::Left => buf.move_cursor_left(1),
+                KeyCode::Right => buf.move_cursor_right(1),
+                KeyCode::Delete => buf.remove_at(),
+                KeyCode::Backspace => buf.remove_before(),
+                KeyCode::Home => buf.move_start_of_line(),
+                KeyCode::End => buf.move_end_of_line(),
+                KeyCode::Char(ch) => buf.insert_char(ch),
                 _ => (),
-            },
-            _ => (),
+            }
         },
-
         _ => (),
     };
+    
+    App::Editor(buf)
 }
 
 fn handle_modal_input(modal: &mut Modal, event: Event) {
@@ -116,41 +108,45 @@ fn handle_modal_input(modal: &mut Modal, event: Event) {
     };
 }
 
-fn handle_goto_line_modal_input(ctx: &mut Context, event: Event) {
-    if let AppState::GoToLineModal(modal) = &mut ctx.state {
-        match event {
-            Event::Key(key) => match key.code {
-                KeyCode::Esc => ctx.state = AppState::Edit,
-                KeyCode::Enter => {
-                    let line_no: usize = modal.line.parse::<usize>().unwrap();
-                    ctx.active_buf.go_to_line(line_no).unwrap();
-                    ctx.state = AppState::Edit
-                }
-                _ => {
-                    handle_modal_input(modal, event);
-                }
-            },
-            _ => (),
-        };
+fn handle_goto_line_modal_input(mut buf: Buffer, mut modal: Modal, event: Event) -> App {
+    match event {
+        Event::Key(key) => match key.code {
+            KeyCode::Esc => return App::Editor(buf),
+            KeyCode::Enter => {
+                let line_no: usize = modal.line.parse::<usize>().unwrap();
+                buf.go_to_line(line_no).unwrap();
+                return App::Editor(buf)
+            }
+            _ => {
+                handle_modal_input(&mut modal, event);
+            }
+        },
+        _ => (),
+    };
+
+    App::GoToLineModal(buf, modal)
+}
+
+fn handle_input(mode: App, event: Event) -> App {
+    if let Event::Resize(_, _) = event {
+        execute!(stdout(), Clear(ClearType::All)).unwrap();
+    }
+    
+    match mode {
+        App::Editor(buf) => handle_edit_input(buf, event),
+        App::GoToLineModal(buf, modal) => handle_goto_line_modal_input(buf, modal, event),
+        App::Quit => App::Quit,
     }
 }
 
-fn handle_input(ctx: &mut Context, event: Event) {
-    match ctx.state {
-        AppState::Edit => handle_edit_input(ctx, event),
-        AppState::GoToLineModal(_) => handle_goto_line_modal_input(ctx, event),
-        AppState::Quit => (),
-    }
-}
-
-fn app_loop(ctx: &mut Context) -> crossterm::Result<()> {
+fn app_loop(mut app: App) -> crossterm::Result<()> {
     // Clean up the screen
     execute!(stdout(), Clear(ClearType::All))?;
 
-    while ctx.state != AppState::Quit {
-        draw_screen(ctx)?;
+    while app != App::Quit {
+        draw_screen(&app)?;
 
-        handle_input(ctx, read()?)
+        app = handle_input(app, read()?);
     }
 
     Ok(())
@@ -159,15 +155,11 @@ fn app_loop(ctx: &mut Context) -> crossterm::Result<()> {
 fn main() {
     let here = std::fs::File::open("./src/main.rs").unwrap();
 
-    let buffer = Buffer::new(here).unwrap();
+    let buffer = Buffer::new("[draft]".to_owned(), here).unwrap();
 
-    let mut ctx = Context {
-        state: AppState::Edit,
-        active_buf: buffer,
-        name: String::from("[draft]"),
-    };
+    let app = App::Editor(buffer);
 
     enable_raw_mode().unwrap();
 
-    app_loop(&mut ctx).unwrap();
+    app_loop(app).unwrap();
 }
